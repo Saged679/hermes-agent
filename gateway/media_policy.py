@@ -18,10 +18,36 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-_FLAG_ENVS = (("strict", "HERMES_MEDIA_DELIVERY_STRICT"), ("trust_recent_files", "HERMES_MEDIA_TRUST_RECENT_FILES"))
 _ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 _TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off", ""})
+# (config key, env var, default): ``strict`` is opt-in (only a known truthy value turns it on) and
+# ``trust_recent_files`` is opt-out (only a known falsy value turns it off). The default is the
+# knob's own, so a missing value and an unreadable one behave the same.
+_FLAGS = (
+    ("strict", "HERMES_MEDIA_DELIVERY_STRICT", False),
+    ("trust_recent_files", "HERMES_MEDIA_TRUST_RECENT_FILES", True),
+)
+
+
+def _flag_value(value: Any, *, default: bool) -> bool:
+    """One reading of a media-policy flag, shared by every path that reads one.
+
+    A known truthy value is on, a known falsy one is off, anything else keeps the knob's
+    default. The ENV readers already worked this way; the CONFIG path read the value with
+    ``bool()``, so a quoted "false" meant TRUE there - the opposite of the same setting on
+    the env path, and of what the operator wrote."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in _TRUTHY:
+        return True
+    if text in _FALSY:
+        return False
+    return default
 
 
 def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
@@ -42,8 +68,8 @@ def _routed_gateway_cfg() -> Optional[dict[str, Any]]:
 def media_delivery_strict() -> bool:
     cfg = _routed_gateway_cfg()
     if cfg is not None:
-        return bool(cfg.get("strict", False))
-    return os.environ.get(_FLAG_ENVS[0][1], "0").strip().lower() in _TRUTHY
+        return _flag_value(cfg.get("strict"), default=False)
+    return _flag_value(os.environ.get(_FLAGS[0][1]), default=False)
 
 
 def media_delivery_allow_dirs() -> str:
@@ -57,8 +83,8 @@ def media_delivery_allow_dirs() -> str:
 def media_delivery_trust_recent() -> bool:
     cfg = _routed_gateway_cfg()
     if cfg is not None:
-        return bool(cfg.get("trust_recent_files", True))
-    return os.environ.get(_FLAG_ENVS[1][1], "1").strip().lower() not in ("0", "false", "no", "off", "")
+        return _flag_value(cfg.get("trust_recent_files"), default=True)
+    return _flag_value(os.environ.get(_FLAGS[1][1]), default=True)
 
 
 def media_delivery_trust_recent_seconds() -> str:
@@ -109,10 +135,10 @@ def apply_media_policy_env(config: Optional[dict[str, Any]] = None) -> None:
         gateway_cfg = _load_gateway_cfg(config)
         if not gateway_cfg:
             return
-        for key, env in _FLAG_ENVS:
+        for key, env, default in _FLAGS:
             flag = gateway_cfg.get(key)
             if flag is not None:
-                _set_env_default(env, "1" if flag else "0")
+                _set_env_default(env, "1" if _flag_value(flag, default=default) else "0")
         allow_dirs = gateway_cfg.get("media_delivery_allow_dirs")
         if allow_dirs:
             _set_env_default(_ALLOW_DIRS_ENV, _allow_dirs_str(allow_dirs))
